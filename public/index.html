@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Title</title>
+</head>
+<body>
+<form action="/ping.bat" method="POST">
+    IP: <input type="text" name="args[]">
+    <input type="submit" value="Windows POST 测试">
+</form>
+<form action="/ping.sh" method="POST">
+    IP: <input type="text" name="args[]">
+    <input type="submit" value="Linux POST 测试">
+</form>
+<button id="windows-fetch-submit">Windows fetch 测试</button>
+<button id="linux-fetch-submit">Windows fetch 测试</button>
+<button id="fetch-abort">停止接受 fetch信息</button>
+<pre id="response"></pre>
+<script>
+    function uint8ArrayToString(uint8Array) {
+        return new TextDecoder("utf-8").decode(uint8Array);
+    }
+
+    function fetchStream(url, options, onData, onClose) {
+        fetch(url, options)
+            .then((res) => {
+                const reader = res.body.getReader();
+                const poll = () => {
+                    reader.read()
+                        .then(({value, done}) => {
+                            if (!done) {
+                                onData && onData(value, reader);
+                                poll();
+                            } else {
+                                onClose && onClose();
+                            }
+                        });
+                }
+                poll();
+            });
+    }
+
+    function fetchButtonOnClick(elSubmitButton, elAbortButton, elTarget, url) {
+        elSubmitButton.addEventListener('click', () => {
+            const readerRef = {
+                reader: null,
+            };
+            const abort = () => {
+                if (readerRef.reader) {
+                    readerRef.reader.cancel();
+                }
+                elAbortButton.removeEventListener('click', abort);
+            };
+            elAbortButton.addEventListener('click', abort);
+            fetchStream(url, {
+                method: 'post',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                },
+                body: new URLSearchParams({
+                    'args[]': '127.0.0.1',
+                }),
+            }, (data, reader) => {
+                readerRef.reader = reader;
+                elTarget.textContent += uint8ArrayToString(data);
+            }, () => {
+                elTarget.textContent += '\n\nFinished!';
+                elAbortButton.removeEventListener('click', abort);
+            });
+        })
+    }
+
+    fetchButtonOnClick(document.querySelector('#windows-fetch-submit'), document.querySelector('#fetch-abort'), document.querySelector('#response'), '/ping.bat');
+    fetchButtonOnClick(document.querySelector('#linux-fetch-submit'), document.querySelector('#fetch-abort'), document.querySelector('#response'), '/ping.sh');
+</script>
+</body>
+</html>
