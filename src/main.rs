@@ -1,143 +1,168 @@
+use axum::extract::{OriginalUri, Query};
+use axum::http::{Response, StatusCode};
+use axum::response::IntoResponse;
+use axum::routing::post;
+use axum::{Extension, Form, Router};
+use bytes::Bytes;
+use clap::Parser;
+use http_body::Frame;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::task::{Context, Poll};
-
-use actix_files::Files;
-use actix_web::{App, HttpResponse, HttpServer, middleware, post, web};
-use futures_core::Stream;
-use path_absolutize::Absolutize;
-use pin_project_lite::pin_project;
+use tokio::io::{AsyncRead, ReadBuf};
 use tokio::process::Command;
-use tokio_util::io::ReaderStream;
+use tower_http::services::{ServeDir, ServeFile};
 
-mod config;
-
-pin_project! {
-    #[derive(Debug)]
-    struct OwnedResourceStream<T, R> {
-        resource: T,
-        #[pin]
-        reader: R,
+pub fn path_clean(path: impl AsRef<str>) -> String {
+    let mut out = Vec::<&str>::new();
+    for comp in path.as_ref().split("/") {
+        match comp {
+            "" => (),
+            "." => (),
+            ".." => {
+                out.pop();
+            }
+            _ => out.push(comp),
+        }
     }
+    out.join("/")
+}
+
+#[derive(Debug)]
+struct OwnedResourceStream<T, R> {
+    _resource: T,
+    reader: R,
 }
 
 impl<T, R> OwnedResourceStream<T, R> {
     pub fn new(resource: T, reader: R) -> Self {
         OwnedResourceStream {
-            resource,
+            _resource: resource,
             reader,
         }
     }
 }
 
-impl<T, R> Stream for OwnedResourceStream<T, R>
-    where R: Stream + Unpin
-{
-    type Item = R::Item;
+// impl<T, R: AsyncRead> Stream for OwnedResourceStream<T, R> {
+//     type Item = Result<Bytes, std::io::Error>;
+//
+//     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+//         let mut buf = BytesMut::with_capacity(4096);
+//         let reader = self.project().reader;
+//         let mut reader = Pin::new(reader);
+//         match reader.poll_read(cx, &mut buf) {
+//             Poll::Ready(Ok(())) => {
+//                 if buf.is_empty() {
+//                     Poll::Ready(None)
+//                 } else {
+//                     Poll::Ready(Some(Ok(buf.freeze())))
+//                 }
+//             }
+//             Poll::Ready(Err(e)) => Poll::Ready(Some(Err(e))),
+//             Poll::Pending => Poll::Pending,
+//         }
+//     }
+// }
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.project().reader.poll_next(cx)
+impl<T: Unpin, R: AsyncRead + Unpin> http_body::Body for OwnedResourceStream<T, R> {
+    type Data = Bytes;
+    type Error = std::io::Error;
+
+    fn poll_frame(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let this = self.get_mut();
+        let mut buf = [0u8; 1024];
+        let mut read_buf = ReadBuf::new(&mut buf);
+        let reader = &mut this.reader;
+        let reader = Pin::new(reader);
+        match reader.poll_read(cx, &mut read_buf) {
+            Poll::Ready(Ok(())) => {
+                if read_buf.filled().is_empty() {
+                    Poll::Ready(None)
+                } else {
+                    Poll::Ready(Some(Ok(Frame::data(Bytes::from(read_buf.filled().to_vec())))))
+                }
+            }
+            Poll::Ready(Err(e)) => Poll::Ready(Some(Err(e))),
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
 
-struct Config {
+struct AppConfig {
     scripts_path: PathBuf,
 }
 
-#[post("/{path:.*}")]
-async fn scripts(path: web::Path<String>, config: web::Data<Config>, query: web::Query<Vec<(String, String)>>, form: web::Form<Vec<(String, String)>>) -> HttpResponse {
-    let path = path.into_inner();
-    let clean_path = match PathBuf::from(&path).absolutize_from(&config.scripts_path) {
-        Ok(clean_path) => {
-            match clean_path.is_file() {
-                true => clean_path.into_owned(),
-                false => {
-                    println!("File not found: {}", clean_path.display());
-                    return HttpResponse::NotFound()
-                        .content_type(mime::TEXT_PLAIN_UTF_8)
-                        .body("File not found");
-                }
-            }
-        }
-        Err(e) => {
-            println!("Parse path failed: {}. Err: {:?}", path, e);
-            return HttpResponse::NotFound()
-                .content_type(mime::TEXT_PLAIN_UTF_8)
-                .body("Parse path failed");
-        }
-    };
+async fn scripts(Extension(config): Extension<Arc<AppConfig>>, OriginalUri(original_uri): OriginalUri, Query(query_params): Query<Vec<(String, String)>>, Form(form_params): Form<Vec<(String, String)>>) -> impl IntoResponse {
+    let args: Vec<String> = query_params.iter().chain(form_params.iter())
+        .filter(|(k, _)| k == "args[]" || k == "args")
+        .map(|(_, v)| v.to_owned())
+        .collect();
+    let clean_path = path_clean(original_uri.path());
+    let script_path = config.scripts_path.join(&clean_path);
+    println!("Clean Path: {} Script Path: {} args: {:?}", &clean_path, script_path.to_string_lossy(), args);
 
-    let args: Vec<String> = query.into_inner().into_iter()
-        .filter(|(k, _)| (k == "args[]" || k == "args"))
-        .map(|(_, v)| v)
-        .chain(
-            form.into_inner().into_iter()
-                .filter(|(k, _)| (k == "args[]" || k == "args"))
-                .map(|(_, v)| v)
-        ).collect();
-
-    println!("Execute: {} args: {:?}", clean_path.display(), args);
-    let mut cmd = Command::new(clean_path);
+    let mut cmd = Command::new(script_path);
     cmd.args(args);
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::null());
     cmd.kill_on_drop(true);
-
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(e) => {
             println!("Spawn cmd error: {:?}. Error: {:?}", cmd, e);
-            return HttpResponse::InternalServerError()
-                .content_type(mime::TEXT_PLAIN_UTF_8)
-                .body("Spawn cmd error");
+            return Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR)
+                .header("Content-Type", "text/plain")
+                .body("Spawn cmd error".to_string())
+                .unwrap().into_response();
         }
     };
     let stdout = match child.stdout.take() {
         Some(stdout) => stdout,
         None => {
             println!("Child did not have a handle to stdout: {:?}", cmd);
-            return HttpResponse::InternalServerError()
-                .content_type(mime::TEXT_PLAIN_UTF_8)
-                .body("Child did not have a handle to stdout");
+            return Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR)
+                .header("Content-Type", "text/plain")
+                .body("Child did not have a handle to stdout".to_string())
+                .unwrap().into_response();
         }
     };
-    let stream = ReaderStream::new(stdout);
-    let owned_stream = OwnedResourceStream::new(child, stream);
-    HttpResponse::Ok()
-        .content_type(mime::TEXT_EVENT_STREAM)
-        .streaming(owned_stream)
+    let owned_stream = OwnedResourceStream::new(child, stdout);
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "text/plain")
+        .header("X-Content-Type-Options", "nosniff")
+        .body(owned_stream)
+        .unwrap().into_response()
 }
 
-#[actix_web::main]
-async fn main() -> std::io::Result<()> {
-    let config_app = config::config();
-    let matches = config_app.get_matches();
-    let listen = matches.value_of("listen").expect("parse 'listen' error").to_owned();
-    let public_path = matches.value_of("public").expect("parse 'public' error").to_owned();
-    let public_index_filename = matches.value_of("public-index").expect("parse 'public-index' error").to_owned();
-    let scripts_path = matches.value_of("scripts").expect("parse 'scripts' error").to_owned();
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[arg(short, long, value_name = "IP:PORT", help = "Listening IP and port", default_value = "127.0.0.1:80")]
+    listen: String,
+    #[arg(long, value_name = "DIR", help = "Static files directory path", default_value = "./public/")]
+    public: String,
+    #[arg(long, value_name = "FILE", help = "Index filename", default_value = "./public/index.html")]
+    public_index: String,
+    #[arg(long, value_name = "DIR", help = "Shell scripts directory path", default_value = "./scripts/")]
+    scripts: String,
+}
 
-    let config = web::Data::new(Config {
-        scripts_path: PathBuf::from(scripts_path).absolutize().unwrap().into_owned(),
+#[tokio::main]
+async fn main() {
+    let config = Args::parse();
+    let app_config = Arc::new(AppConfig {
+        scripts_path: PathBuf::from(config.scripts),
     });
+    let app = Router::new()
+        .route("/{*path}", post(scripts))
+        .layer(Extension(app_config))
+        .fallback_service(ServeDir::new(&config.public).fallback(ServeFile::new(&config.public_index)));
 
-    println!("Server is listening on {}", listen);
-
-    HttpServer::new(move || {
-        let static_files = Files::new("/", public_path.clone())
-            .index_file(public_index_filename.clone())
-            .use_etag(true)
-            .use_last_modified(true);
-
-        App::new()
-            .wrap(middleware::Logger::default())
-            .app_data(config.clone())
-            .service(scripts)
-            .service(static_files)
-    })
-        .bind(listen)?
-        .run()
-        .await
+    let listener = tokio::net::TcpListener::bind(&config.listen).await.unwrap();
+    println!("Server is listening on {}", &config.listen);
+    axum::serve(listener, app).await.unwrap();
 }

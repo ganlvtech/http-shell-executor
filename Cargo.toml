@@ -1,17 +1,14 @@
 [package]
 name = "http-shell-executor"
-version = "0.1.0"
-edition = "2021"
+version = "1.0.0"
+edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+axum = { version = "0.8.1"}
+bytes = "1.10.1"
+clap = { version = "4.5.32", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
-actix-web = { version = "4.0.0-beta.10", features = ["compress-gzip", "cookies"], default-features = false }
-actix-files = "0.6.0-beta.8"
-tokio-util = "0.6.9"
-futures-core = "0.3.17"
-pin-project-lite = "0.2.7"
-mime = "0.3.16"
-path-absolutize = "3.0.11"
-clap = "2.33.3"
+tower-http = { version = "0.6.2", features = ["fs"] }
+http-body = "1.0.1"

@@ -6,20 +6,22 @@
 </head>
 <body>
 <form action="/ping.bat" method="POST">
-    IP: <input type="text" name="args[]">
+    IP: <input type="text" name="args[]" value="127.0.0.1">
     <input type="submit" value="Windows POST 测试">
 </form>
 <form action="/ping.sh" method="POST">
-    IP: <input type="text" name="args[]">
+    IP: <input type="text" name="args[]" value="127.0.0.1">
     <input type="submit" value="Linux POST 测试">
 </form>
 <button id="windows-fetch-submit">Windows fetch 测试</button>
-<button id="linux-fetch-submit">Windows fetch 测试</button>
+<button id="linux-fetch-submit">Linux fetch 测试</button>
+<button id="windows-fetch-stream-submit">Windows fetch stream 测试</button>
+<button id="linux-fetch-stream-submit">Linux fetch stream 测试</button>
 <button id="fetch-abort">停止接受 fetch信息</button>
 <pre id="response"></pre>
 <script>
-    function uint8ArrayToString(uint8Array) {
-        return new TextDecoder("utf-8").decode(uint8Array);
+    function uint8ArrayToString(uint8Array, charset='utf-8') {
+        return new TextDecoder(charset).decode(uint8Array);
     }
 
     function fetchStream(url, options, onData, onClose) {
@@ -41,7 +43,7 @@
             });
     }
 
-    function fetchButtonOnClick(elSubmitButton, elAbortButton, elTarget, url) {
+    function fetchStreamButtonOnClick(elSubmitButton, elAbortButton, elTarget, url, charset = 'utf-8') {
         elSubmitButton.addEventListener('click', () => {
             const readerRef = {
                 reader: null,
@@ -58,12 +60,14 @@
                 headers: {
                     'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
                 },
-                body: new URLSearchParams({
-                    'args[]': '127.0.0.1',
-                }),
+                body: new URLSearchParams([
+                    ['args[]', '127.0.0.1'],
+                    ['args[]', '-n'],
+                    ['args[]', '100'],
+                ]),
             }, (data, reader) => {
                 readerRef.reader = reader;
-                elTarget.textContent += uint8ArrayToString(data);
+                elTarget.textContent += uint8ArrayToString(data, charset);
             }, () => {
                 elTarget.textContent += '\n\nFinished!';
                 elAbortButton.removeEventListener('click', abort);
@@ -71,8 +75,30 @@
         })
     }
 
-    fetchButtonOnClick(document.querySelector('#windows-fetch-submit'), document.querySelector('#fetch-abort'), document.querySelector('#response'), '/ping.bat');
-    fetchButtonOnClick(document.querySelector('#linux-fetch-submit'), document.querySelector('#fetch-abort'), document.querySelector('#response'), '/ping.sh');
+    function fetchButtonOnClick(elSubmitButton, elTarget, url, charset = 'utf-8') {
+        elSubmitButton.addEventListener('click', () => {
+            fetch(url, {
+                method: 'post',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                },
+                body: new URLSearchParams([
+                    ['args[]', '127.0.0.1'],
+                    ['args[]', '-n'],
+                    ['args[]', '2'],
+                ])
+            })
+                .then((res) => res.arrayBuffer())
+                .then((buffer) => {
+                    elTarget.textContent = uint8ArrayToString(new Uint8Array(buffer), charset);
+                });
+        });
+    }
+
+    fetchButtonOnClick(document.querySelector('#windows-fetch-submit'), document.querySelector('#response'), '/ping.bat', 'gbk');
+    fetchButtonOnClick(document.querySelector('#linux-fetch-submit'), document.querySelector('#response'), '/ping.sh', 'utf-8');
+    fetchStreamButtonOnClick(document.querySelector('#windows-fetch-stream-submit'), document.querySelector('#fetch-abort'), document.querySelector('#response'), '/ping.bat', 'gbk');
+    fetchStreamButtonOnClick(document.querySelector('#linux-fetch-stream-submit'), document.querySelector('#fetch-abort'), document.querySelector('#response'), '/ping.sh', 'utf-8');
 </script>
 </body>
 </html>
