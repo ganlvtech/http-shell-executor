@@ -99,7 +99,7 @@ async fn scripts(Extension(config): Extension<Arc<AppConfig>>, OriginalUri(origi
         .filter(|(k, _)| k == "args[]" || k == "args")
         .map(|(_, v)| v.to_owned())
         .collect();
-    let clean_path = path_clean(original_uri.path());
+    let clean_path = path_clean(original_uri.path().replace("\\", "/"));
     let script_path = config.scripts_path.join(&clean_path);
     println!("Clean Path: {} Script Path: {} args: {:?}", &clean_path, script_path.to_string_lossy(), args);
 
