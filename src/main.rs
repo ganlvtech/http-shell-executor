@@ -51,7 +51,7 @@ impl<T, R> OwnedResourceStream<T, R> {
 
 impl<T, R> Drop for OwnedResourceStream<T, R> {
     fn drop(&mut self) {
-        eprintln!("OwnedResourceStream {} dropped", self.name);
+        println!("OwnedResourceStream {} dropped", self.name);
     }
 }
 
@@ -83,7 +83,7 @@ async fn handle_scripts(Extension(config): Extension<Arc<Args>>, OriginalUri(ori
     let path = match urlencoding::decode(original_uri.path()) {
         Ok(path) => path,
         Err(e) => {
-            eprintln!("Invalid path: {}", e);
+            println!("Invalid path: {}", e);
             return (StatusCode::BAD_REQUEST, format!("Invalid path: {}", e)).into_response();
         }
     };
@@ -95,7 +95,7 @@ async fn handle_scripts(Extension(config): Extension<Arc<Args>>, OriginalUri(ori
     let clean_path = path_clean(path);
     #[allow(unused_mut)]
     let mut script_path = PathBuf::from(&config.scripts_dir).join(&clean_path);
-    eprintln!("Clean Path: {} Script Path: {} args: {:?}", &clean_path, script_path.to_string_lossy(), args);
+    println!("Clean Path: {} Script Path: {} args: {:?}", &clean_path, script_path.to_string_lossy(), args);
     if !script_path.exists() {
         return Response::builder().status(StatusCode::NOT_FOUND)
             .header("Content-Type", "text/plain")
@@ -121,14 +121,14 @@ async fn handle_scripts(Extension(config): Extension<Arc<Args>>, OriginalUri(ori
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(e) => {
-            eprintln!("Spawn cmd error: {:?}. Error: {:?}", cmd, e);
+            println!("Spawn cmd error: {:?}. Error: {:?}", cmd, e);
             return (StatusCode::INTERNAL_SERVER_ERROR, "Spawn cmd error").into_response();
         }
     };
     let stdout = match child.stdout.take() {
         Some(stdout) => stdout,
         None => {
-            eprintln!("Child did not have a handle to stdout: {:?}", cmd);
+            println!("Child did not have a handle to stdout: {:?}", cmd);
             return (StatusCode::INTERNAL_SERVER_ERROR, "Child did not have a handle to stdout").into_response();
         }
     };
@@ -150,15 +150,24 @@ async fn handle_upload(Extension(config): Extension<Arc<Args>>, OriginalUri(orig
         Some(path) => path,
         None => return Err((StatusCode::FORBIDDEN, format!("Invalid path: {}", path))),
     };
+    let is_dir = path.ends_with('/');
     let full_path = PathBuf::from(&config.upload_dir).join(path_clean(path));
-    eprintln!("Upload {} bytes to: {:?}", body.len(), full_path);
-    if let Some(parent) = full_path.parent() {
-        create_dir_all(parent).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create directories: {}", e)))?;
+    println!("Upload {} bytes to: {:?}", body.len(), full_path);
+    if is_dir && body.len() > 0 {
+        return Err((StatusCode::FORBIDDEN, "Create directory with non-empty body".to_string()));
     }
-    File::create(&full_path).await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create file: {}", e)))?
-        .write_all(&body).await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to write file: {}", e)))?;
+    if is_dir {
+        create_dir_all(&full_path).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create directory: {}", e)))?;
+    } else {
+        if let Some(parent) = full_path.parent() {
+            create_dir_all(parent).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create directory: {}", e)))?;
+        }
+        File::create(&full_path).await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create file: {}", e)))?
+            .write_all(&body).await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to write file: {}", e)))?;
+    }
+    println!("Upload successful: {:?}", full_path);
     Ok(())
 }
 
