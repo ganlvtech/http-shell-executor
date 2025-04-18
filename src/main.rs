@@ -15,6 +15,7 @@ use tokio::fs::{create_dir_all, File};
 use tokio::io::{AsyncRead, AsyncWriteExt, ReadBuf};
 use tokio::process::Command;
 use tower_http::services::{ServeDir, ServeFile};
+use tower_http::compression::{Compression, CompressionLevel};
 
 pub fn path_clean(path: impl AsRef<str>) -> String {
     let mut out = Vec::<&str>::new();
@@ -195,7 +196,9 @@ async fn main() {
     let config = Args::parse();
     let app = post(handle_scripts)
         .merge(put(handle_upload).layer(DefaultBodyLimit::max(200 * 1024 * 1024)))
-        .fallback_service(ServeDir::new(&config.public_dir).fallback(ServeFile::new(&config.public_index)))
+        .fallback_service(Compression::new(
+            ServeDir::new(&config.public_dir).fallback(ServeFile::new(&config.public_index))
+        ).gzip(true).deflate(true).br(true).zstd(true).quality(CompressionLevel::Best))
         .layer(Extension(Arc::new(config.clone())));
 
     let listener = tokio::net::TcpListener::bind(&config.listen).await.unwrap();
